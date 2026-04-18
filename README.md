@@ -5,6 +5,7 @@ Load code onto ESP32 with Platormio (change the port in the ini file to whatever
 
 ![insides](insides.jpg)
 
+![flashing](flashing.gif)
 
 BOM:
 - [Adafruit Feather ESP32 V2](https://www.adafruit.com/product/5400)
