@@ -84,6 +84,7 @@ static String buildScoresJson();
 static String buildThoughtsJson();
 static String buildLogJson();
 static String buildSnapshotJson(bool includeLog);
+static void queueHumanProbe(uint8_t r, uint8_t g, uint8_t b);
 static bool getRequestInt(AsyncWebServerRequest* request, const char* key, int& valueOut);
 static bool getRequestFloat(AsyncWebServerRequest* request, const char* key, float& valueOut);
 static bool getRequestString(AsyncWebServerRequest* request, const char* key, String& valueOut);
@@ -156,7 +157,7 @@ float gaussRand(){
 }
 
 // ── Algorithm state ───────────────────────────────────────────────────────────
-enum Alg { ALG_NONE=0, ALG_SPSA, ALG_BAYES, ALG_THOMPSON, ALG_CMAES };
+enum Alg { ALG_NONE=0, ALG_SPSA, ALG_BAYES, ALG_THOMPSON, ALG_CMAES, ALG_HUMAN };
 static Alg   alg=ALG_NONE;
 static bool  running=false, settling=false;
 static uint32_t nextMs=0;
@@ -170,6 +171,7 @@ static float tsBwInit=0.25f;
 static int   tsCandidateCount=80;
 static float cmaSigmaInit=32.0f;
 static int   cmaMuActive=3;
+static const int HUMAN_MAX_TRIES=10;
 
 static uint8_t  bestR=128,bestG=128,bestB=128;
 static float    bestScore=-1.0f;
@@ -181,6 +183,9 @@ static bool     converged=false;
 static int      calibPhase=0;  // 0=running, 1=dark reading, 2=target reading
 static float    lastScore=0.0f;
 static char     stateMsg[100]="Set a target color and press Search.";
+static bool     humanProbePending=false;
+static bool     humanAwaitingProbe=false;
+static uint8_t  humanProbeR=128, humanProbeG=128, humanProbeB=128;
 
 static String jsonEscape(const char* src){
   String out;
@@ -214,6 +219,8 @@ static void stopExperiment(const char* msg, bool turnLedOff){
   running=false;
   settling=false;
   calibPhase=0;
+  humanProbePending=false;
+  humanAwaitingProbe=false;
   if(msg) setStateMessage(msg);
   if(turnLedOff) setLED(0,0,0);
 }
@@ -327,6 +334,8 @@ static void startMdns(){
 }
 
 void updateBest(uint8_t r,uint8_t g,uint8_t b,float sc,const char* alg_name){
+  bool humanMode = (alg==ALG_HUMAN);
+  int maxEvals = humanMode ? HUMAN_MAX_TRIES : 400;
   bool imp=(sc>bestScore);
   if(imp){ bestScore=sc; bestR=r; bestG=g; bestB=b; }
   if(hit90Ms < 0 && imp && bestScore >= 90.0f && runStartMs > 0){
@@ -340,17 +349,22 @@ void updateBest(uint8_t r,uint8_t g,uint8_t b,float sc,const char* alg_name){
   pushScore(sc);
   pushAcceptedScore(sc);
   totalIter++;
-  if(bestScore>95.0f){
+  if(!humanMode && bestScore>95.0f){
     converged=true;
     snprintf(msg,99,"CONVERGED — Recipe: R=%d%% G=%d%% B=%d%% (score=%.1f%%)",
       (int)(bestR/2.55f),(int)(bestG/2.55f),(int)(bestB/2.55f),bestScore);
     setStateMessage(msg);
     addThought(bestR,bestG,bestB,bestScore,true,msg);
     running=false; setLED(bestR,bestG,bestB);
-  } else if(evalCount>=400){
+  } else if(evalCount>=maxEvals){
     converged=false;
-    snprintf(msg,99,"BUDGET REACHED — Recipe: R=%d%% G=%d%% B=%d%% (score=%.1f%%)",
-      (int)(bestR/2.55f),(int)(bestG/2.55f),(int)(bestB/2.55f),bestScore);
+    if(humanMode){
+      snprintf(msg,99,"HUMAN CHALLENGE COMPLETE — Best: R=%d%% G=%d%% B=%d%% (score=%.1f%%)",
+        (int)(bestR/2.55f),(int)(bestG/2.55f),(int)(bestB/2.55f),bestScore);
+    } else {
+      snprintf(msg,99,"BUDGET REACHED — Recipe: R=%d%% G=%d%% B=%d%% (score=%.1f%%)",
+        (int)(bestR/2.55f),(int)(bestG/2.55f),(int)(bestB/2.55f),bestScore);
+    }
     setStateMessage(msg);
     addThought(bestR,bestG,bestB,bestScore,false,msg);
     running=false; setLED(bestR,bestG,bestB);
@@ -365,6 +379,9 @@ void resetAll(){
   hit90Ms=-1;
   lastScore=0.0f;
   sensorReadFailures=0;
+  humanProbePending=false;
+  humanAwaitingProbe=false;
+  humanProbeR=humanProbeG=humanProbeB=128;
 }
 
 // ── Algorithm 1: SPSA Gradient Descent ───────────────────────────────────────
@@ -504,6 +521,21 @@ void afterTS(const Reading& rd, float sc){
   tsHist[idx]={(float)ledR,(float)ledG,(float)ledB,sc}; tsLen++;
   tsBW=max(tsBW*0.997f,0.05f);
   updateBest(ledR,ledG,ledB,sc,"TS");
+}
+
+void afterHuman(const Reading& rd, float sc){
+  humanAwaitingProbe=false;
+  updateBest(ledR,ledG,ledB,sc,"Human");
+  if(!running) return;
+  if(converged){
+    return;
+  }
+  if(evalCount>=HUMAN_MAX_TRIES){
+    return;
+  }
+  char msg[120];
+  snprintf(msg,sizeof(msg),"Human step %d scored %.1f%%. Adjust the sliders and probe again.",totalIter,sc);
+  setStateMessage(msg);
 }
 
 // ── Algorithm 4: CMA-ES (diagonal covariance) ─────────────────────────────────
@@ -696,6 +728,12 @@ button{border:none;border-radius:7px;padding:7px 16px;font-size:.8rem;font-weigh
 .tune-actions{display:flex;justify-content:space-between;align-items:center;margin-top:8px}
 .btn-subtle{background:#1a1d28;color:#cdd1e5;border:1px solid var(--bd);padding:6px 10px}
 .btn-subtle:hover{background:#242938}
+.human-shell{display:none;margin-top:10px;padding-top:10px;border-top:1px solid #202538}
+.human-shell.active{display:block}
+.human-grid{display:grid;grid-template-columns:20px 1fr 56px;gap:8px;align-items:center}
+.human-grid + .human-grid{margin-top:8px}
+.human-grid input[type=range]{width:100%}
+.human-grid input[type=number]{width:100%;background:#1e2130;border:1px solid var(--bd);color:var(--tx);border-radius:6px;padding:6px 7px;font-size:.76rem}
 /* Hyp bars */
 .ch-row{display:flex;align-items:center;gap:7px;margin-bottom:5px}
 .ch-lbl{font-size:.72rem;font-weight:700;width:10px}
@@ -791,11 +829,37 @@ td:nth-child(-n+5){text-align:left}
           <div class="nm">CMA-ES</div>
           <div class="ds">Evolves a population. Adapts search geometry each generation.</div>
         </div>
+        <div class="alg" data-alg="human" onclick="selAlg(this)">
+          <div class="nm">Human</div>
+          <div class="ds">You steer the search. Move RGB sliders, submit probes, and race the AI.</div>
+        </div>
       </div>
       <div class="row">
         <button class="btn-go"   id="btnSearch" onclick="startSearch()" disabled>&#9654; Search</button>
         <button class="btn-stop" id="btnStop2"  onclick="stopExp()"    disabled>&#9632; Stop</button>
         <span class="dot dot-idle" id="dot2" style="margin-left:4px"></span>
+      </div>
+      <div class="human-shell" id="humanShell">
+        <div style="font-size:.66rem;color:var(--dim)">You get 10 blind tries. Adjust a color, then press Score Probe after Human mode starts.</div>
+        <div class="human-grid">
+          <span class="ch-lbl r">R</span>
+          <input id="hRRange" type="range" min="0" max="255" value="128" oninput="syncHumanInput('R','range')">
+          <input id="hRNum" type="number" min="0" max="255" value="128" oninput="syncHumanInput('R','num')">
+        </div>
+        <div class="human-grid">
+          <span class="ch-lbl g">G</span>
+          <input id="hGRange" type="range" min="0" max="255" value="128" oninput="syncHumanInput('G','range')">
+          <input id="hGNum" type="number" min="0" max="255" value="128" oninput="syncHumanInput('G','num')">
+        </div>
+        <div class="human-grid">
+          <span class="ch-lbl b">B</span>
+          <input id="hBRange" type="range" min="0" max="255" value="128" oninput="syncHumanInput('B','range')">
+          <input id="hBNum" type="number" min="0" max="255" value="128" oninput="syncHumanInput('B','num')">
+        </div>
+        <div class="row" style="margin-top:10px">
+          <button class="btn-subtle" id="btnHumanProbe" onclick="submitHumanProbe()" disabled>Score Probe</button>
+          <span id="humanHint" style="font-size:.68rem;color:var(--dim)">Start a Human run to unlock manual probes.</span>
+        </div>
       </div>
     </div>
 
@@ -1022,6 +1086,10 @@ const ALG_META={
   cmaes:{
     name:'CMA-ES',
     desc:'Tries a population of candidate colors, keeps the stronger ones, and reshapes the search region generation by generation.'
+  },
+  human:{
+    name:'Human',
+    desc:'A person chooses each RGB probe directly, so you can compare human intuition against the automated search algorithms.'
   }
 };
 const TUNING_DEFAULTS={
@@ -1037,13 +1105,38 @@ const TUNING_DEFAULTS={
   cmaSig:32,
   cmaMu:3
 };
+const HUMAN_MAX_TRIES_JS=10;
 let curAlg='spsa';
 let latestThoughts=[];
 let latestStatus=null;
 let hasRunStarted=false;
 let tuningOpen=false;
+function clamp255(v){ return Math.max(0, Math.min(255, Number.isFinite(v)?v:0)); }
+function currentHumanRGB(){
+  return {
+    r:clamp255(parseInt(document.getElementById('hRNum').value,10)),
+    g:clamp255(parseInt(document.getElementById('hGNum').value,10)),
+    b:clamp255(parseInt(document.getElementById('hBNum').value,10))
+  };
+}
+function refreshHumanPreview(){
+}
+function syncHumanInput(ch, source){
+  const range=document.getElementById(`h${ch}Range`);
+  const num=document.getElementById(`h${ch}Num`);
+  const value=clamp255(parseInt((source==='range'?range:num).value,10));
+  range.value=value;
+  num.value=value;
+  refreshHumanPreview();
+}
 function setTuningVisibility(){
   document.querySelectorAll('.tune-group').forEach(g=>g.classList.toggle('active',g.dataset.tune===curAlg));
+  const tuneCard=document.getElementById('tuneShell')?.closest('.card');
+  if(tuneCard) tuneCard.style.display=curAlg==='human'?'none':'block';
+  const humanShell=document.getElementById('humanShell');
+  if(humanShell) humanShell.classList.toggle('active',curAlg==='human');
+  const startBtn=document.getElementById('btnSearch');
+  if(startBtn) startBtn.innerHTML=curAlg==='human'?'&#9654; Start':'&#9654; Search';
 }
 function toggleTuning(forceOpen){
   if(typeof forceOpen === 'boolean') tuningOpen=forceOpen;
@@ -1086,6 +1179,7 @@ function selAlg(el){
   document.querySelectorAll('.alg').forEach(a=>a.classList.remove('active')); el.classList.add('active');
   curAlg=el.dataset.alg;
   setTuningVisibility();
+  refreshHumanPreview();
   renderAlgNarrative();
 }
 
@@ -1110,9 +1204,22 @@ async function startSearch(){
   document.getElementById('btnSearch').disabled=true;
   document.getElementById('btnStop2').disabled=false;
   document.getElementById('dot2').className='dot dot-run';
+  document.getElementById('btnHumanProbe').disabled=true;
+  document.getElementById('humanHint').textContent=curAlg==='human'
+    ? 'Calibrating first. Score Probe unlocks when the run is ready.'
+    : 'Start a Human run to unlock manual probes.';
   pollBusy=false; auxBusy=false; pollTick=0;
   renderAlgNarrative();
   poll=setInterval(doPoll,800);
+}
+async function submitHumanProbe(){
+  const {r,g,b}=currentHumanRGB();
+  const res=await fetch('/human_probe',{method:'POST',
+    headers:{'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8'},
+    body:new URLSearchParams({r,g,b})});
+  if(!res.ok) return;
+  document.getElementById('btnHumanProbe').disabled=true;
+  document.getElementById('humanHint').textContent=`Queued rgb(${r},${g},${b}). Measuring after settle...`;
 }
 async function stopExp(){ await fetch('/stop',{method:'POST'}); endPoll(); }
 async function doCalibrate(){
@@ -1132,6 +1239,8 @@ function endPoll(){
   document.getElementById('btnSearch').disabled=false;
   document.getElementById('btnStop2').disabled=false;
   document.getElementById('dot2').className='dot dot-idle';
+  document.getElementById('btnHumanProbe').disabled=true;
+  document.getElementById('humanHint').textContent='Start a Human run to unlock manual probes.';
   renderAlgNarrative();
 }
 function formatDuration(ms){
@@ -1156,7 +1265,7 @@ async function doPoll(){
   }catch(e){}
   finally{ pollBusy=false; }
 }
-const ALG_NAME={spsa:'GD',bayes:'BO',thompson:'TS',cmaes:'CMA-ES'};
+const ALG_NAME={spsa:'GD',bayes:'BO',thompson:'TS',cmaes:'CMA-ES',human:'Human'};
 function updateUI(d){
   const rec=d.recipe; if(!rec) return;
   // Current probe swatch — updates every step so you can see the algorithm exploring
@@ -1179,6 +1288,13 @@ function updateUI(d){
   const msgEl=document.getElementById('sMsg');
   msgEl.textContent=rec.msg;
   msgEl.className='msg'+(rec.converged?' done':rec.bestScore>70?' ok':'');
+  const humanActive=(getAlgorithmKeyFromStatus(d)==='human' && d.running);
+  const probeBtn=document.getElementById('btnHumanProbe');
+  const probeBusy=d.humanAwaitingProbe || d.humanProbePending;
+  probeBtn.disabled=!(humanActive && !probeBusy);
+  document.getElementById('humanHint').textContent=humanActive
+    ? (probeBusy ? 'Probe in progress. Wait for the score, then try another color.' : 'Human mode ready. Adjust the RGB controls and press Score Probe.')
+    : 'Start a Human run to unlock manual probes.';
   renderAlgNarrative(d);
   // Update raw bars
   if(d.channels){
@@ -1191,7 +1307,7 @@ function updateUI(d){
 
 function getAlgorithmKeyFromStatus(d){
   if(d && typeof d.algorithm === 'number'){
-    return {1:'spsa',2:'bayes',3:'thompson',4:'cmaes'}[d.algorithm] || curAlg;
+    return {1:'spsa',2:'bayes',3:'thompson',4:'cmaes',5:'human'}[d.algorithm] || curAlg;
   }
   return curAlg;
 }
@@ -1254,6 +1370,13 @@ function renderAlgNarrative(d){
         why=thought && thought.improved
           ? 'A strong offspring pulls the next generation toward that region and can also tighten or stretch the search spread.'
           : 'CMA-ES learns the useful search geometry, so it can zoom along productive RGB directions instead of shrinking evenly.';
+      } else if(algKey==='human'){
+        phase=d.humanAwaitingProbe || d.humanProbePending
+          ? 'Measuring your chosen color against the target spectrum.'
+          : `Waiting for your next move. Pick a new RGB recipe with the sliders and submit it for scoring. ${Math.max(0, HUMAN_MAX_TRIES_JS - (rec.evals || 0))} tries remain.`;
+        why=thought && thought.improved
+          ? 'Your last move improved the score, so you can use that feedback to decide whether to push further in the same direction.'
+          : 'Human mode is a 10-turn challenge: your goal is simply to post the highest score you can before the tries run out.';
       }
 
       if(rec.bestScore >= 0 && latest != null){
@@ -1479,6 +1602,7 @@ const tlogCard=document.getElementById('tlog').closest('.card');
 const rightCol=document.querySelector('.rcol');
 if(tlogCard && rightCol) rightCol.appendChild(tlogCard);
 resetTuning();
+refreshHumanPreview();
 applyTarget();
 renderAlgNarrative();
 doPoll();
@@ -1494,11 +1618,13 @@ void handleRoot(AsyncWebServerRequest* request){ request->send(200,"text/html",H
 static String buildStatusJson(){
   uint32_t elapsedMs = runStartMs > 0 ? (millis() - runStartMs) : 0;
   String j="{";
-  j.reserve(384);
+  j.reserve(448);
   j+="\"running\":"+String(running?"true":"false")+",";
   j+="\"lastScore\":"+String(lastScore,1)+",";
   j+="\"sensor\":"+String(sensorOK?"true":"false")+",";
   j+="\"algorithm\":"+String((int)alg)+",";
+  j+="\"humanAwaitingProbe\":"+String(humanAwaitingProbe?"true":"false")+",";
+  j+="\"humanProbePending\":"+String(humanProbePending?"true":"false")+",";
   j+="\"count\":"+String(logCount)+",";
   j+="\"led\":{\"r\":"+String(ledR)+",\"g\":"+String(ledG)+",\"b\":"+String(ledB)+"},";
   j+="\"channels\":[";
@@ -1552,6 +1678,7 @@ void handleStart(AsyncWebServerRequest* request){
   else if(algStr=="bayes")   { alg=ALG_BAYES;   }
   else if(algStr=="thompson"){ alg=ALG_THOMPSON; }
   else if(algStr=="cmaes")   { alg=ALG_CMAES;   }
+  else if(algStr=="human")   { alg=ALG_HUMAN;   }
   else{ request->send(400,"application/json","{\"error\":\"unknown algorithm\"}"); return; }
   // Two-step calibration: (1) dark frame with LED off, (2) target color with LED on.
   // Subtracting the dark frame removes ambient light's spectral signature from scoring.
@@ -1560,6 +1687,35 @@ void handleStart(AsyncWebServerRequest* request){
   setLED(0,0,0); // LED off for dark frame
   setStateMessage("Calibrating: reading dark frame...");
   running=true; settling=true; nextMs=millis()+settleMs;
+  request->send(200,"application/json","{\"ok\":true}");
+}
+
+void handleHumanProbe(AsyncWebServerRequest* request){
+  if(!sensorOK){
+    request->send(503,"application/json","{\"error\":\"sensor unavailable\"}");
+    return;
+  }
+  if(!running || alg!=ALG_HUMAN){
+    request->send(409,"application/json","{\"error\":\"human mode not active\"}");
+    return;
+  }
+  if(calibPhase!=0){
+    request->send(409,"application/json","{\"error\":\"still calibrating\"}");
+    return;
+  }
+  if(humanProbePending || humanAwaitingProbe){
+    request->send(409,"application/json","{\"error\":\"probe already in progress\"}");
+    return;
+  }
+  uint8_t reqR=0, reqG=0, reqB=0;
+  if(!getRequestRgb(request,reqR,reqG,reqB)){
+    request->send(400,"application/json","{\"error\":\"invalid rgb\"}");
+    return;
+  }
+  queueHumanProbe(reqR,reqG,reqB);
+  char msg[120];
+  snprintf(msg,sizeof(msg),"Human queued rgb(%d,%d,%d). Measuring after settle...",reqR,reqG,reqB);
+  setStateMessage(msg);
   request->send(200,"application/json","{\"ok\":true}");
 }
 
@@ -1645,6 +1801,14 @@ static String buildSnapshotJson(bool includeLog){
   }
   j += "}";
   return j;
+}
+
+static void queueHumanProbe(uint8_t r, uint8_t g, uint8_t b){
+  humanProbeR=r;
+  humanProbeG=g;
+  humanProbeB=b;
+  humanProbePending=true;
+  humanAwaitingProbe=false;
 }
 
 static bool getRequestInt(AsyncWebServerRequest* request, const char* key, int& valueOut){
@@ -1736,6 +1900,7 @@ void setup(){
   server.on("/thoughts", HTTP_GET,  handleThoughts);
   server.on("/scores",   HTTP_GET,  handleScores);
   server.on("/start",    HTTP_POST, handleStart);
+  server.on("/human_probe", HTTP_POST, handleHumanProbe);
   server.on("/stop",     HTTP_POST, handleStop);
   server.on("/calibrate",HTTP_POST, handleCalibrate);
   server.begin(); Serial.println("Server started.");
@@ -1756,6 +1921,12 @@ void loop(){
       case ALG_BAYES:    stepBO();      break;
       case ALG_THOMPSON: stepTS();      break;
       case ALG_CMAES:    stepCMA();     break;
+      case ALG_HUMAN:
+        if(!humanProbePending) return;
+        setLED(humanProbeR,humanProbeG,humanProbeB);
+        humanProbePending=false;
+        humanAwaitingProbe=true;
+        break;
       default: break;
     }
     settling=true; nextMs=now+settleMs;
@@ -1796,9 +1967,19 @@ void loop(){
           case ALG_BAYES:    initBO();      break;
           case ALG_THOMPSON: initTS();      break;
           case ALG_CMAES:    initCMA();     break;
+          case ALG_HUMAN:
+            humanAwaitingProbe=false;
+            humanProbePending=false;
+            setLED(0,0,0);
+            setStateMessage("Human mode ready. Adjust a color and press Score Probe.");
+            break;
           default: break;
         }
-        settling=false; nextMs=now+pauseMs;
+        if(alg==ALG_HUMAN){
+          settling=false; nextMs=now;
+        } else {
+          settling=false; nextMs=now+pauseMs;
+        }
         return;
       }
       int idx=logHead%LOG_MAX;
@@ -1812,6 +1993,7 @@ void loop(){
         case ALG_BAYES:    afterBO(rd,sc);      break;
         case ALG_THOMPSON: afterTS(rd,sc);      break;
         case ALG_CMAES:    afterCMA(rd,sc);     break;
+        case ALG_HUMAN:    afterHuman(rd,sc);   break;
         default: break;
       }
     } else {
@@ -1822,6 +2004,10 @@ void loop(){
         return;
       }
     }
-    settling=false; nextMs=now+pauseMs;
+    if(alg==ALG_HUMAN){
+      settling=false; nextMs=now;
+    } else {
+      settling=false; nextMs=now+pauseMs;
+    }
   }
 }
