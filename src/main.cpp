@@ -7,7 +7,20 @@
 #include <math.h>
 #include <Preferences.h>
 #include <Adafruit_NeoPixel.h>
+
+#if defined(SDL_SENSOR_AS7341) && defined(SDL_SENSOR_AS7343)
+#error "Define only one of SDL_SENSOR_AS7341 or SDL_SENSOR_AS7343."
+#endif
+
+#if !defined(SDL_SENSOR_AS7341) && !defined(SDL_SENSOR_AS7343)
+#define SDL_SENSOR_AS7343 1
+#endif
+
+#if defined(SDL_SENSOR_AS7341)
+#include <Adafruit_AS7341.h>
+#else
 #include <Adafruit_AS7343.h>
+#endif
 
 // ── Hardware ──────────────────────────────────────────────────────────────────
 #define NEOPIXEL_PIN   0
@@ -24,9 +37,58 @@
 
 static const char WIFI_SSID_VALUE[] = WIFI_SSID;
 static const char WIFI_PASS_VALUE[] = WIFI_PASS;
+static const char AP_FALLBACK_SSID[] = "SDL";
+
+#if defined(SDL_SENSOR_AS7341)
+using SpectralSensor = Adafruit_AS7341;
+using SensorGain = as7341_gain_t;
+static const char SENSOR_DISPLAY_NAME[] = "AS7341";
+static const char SENSOR_SUBTITLE[] = "Self-Driving Lab &mdash; ESP32 Feather V2 + AS7341";
+static const int NUM_CH = 10;
+static const int RAW_READ_CH = 12;
+static const int N_SPEC = 8;
+static const int SPEC_CH[] = {0,1,2,3,6,7,8,9};
+static const float SPEC_WL[] = {415,445,480,515,555,590,630,680};
+static const float W_R[NUM_CH]={0.00f,0.02f,0.08f,0.28f,0.00f,0.00f,0.55f,0.82f,1.00f,0.46f};
+static const float W_G[NUM_CH]={0.03f,0.16f,0.55f,0.95f,0.00f,0.00f,0.78f,0.28f,0.03f,0.00f};
+static const float W_B[NUM_CH]={0.52f,0.95f,0.78f,0.18f,0.00f,0.00f,0.01f,0.00f,0.00f,0.00f};
+static const char SENSOR_JS_SPEC_IDX[] = "[0,1,2,3,6,7,8,9]";
+static const char SENSOR_JS_SPEC_WL[] = "[415,445,480,515,555,590,630,680]";
+static const char SENSOR_JS_SPEC_COL[] = "['#7f00ff','#2d5bff','#00a6ff','#00c96a','#c7d400','#ff9b00','#ff4d2b','#cc0017']";
+static const char SENSOR_JS_CH_COL[] = "['#7f00ff','#2d5bff','#00a6ff','#00c96a','#bfbfbf','#777','#c7d400','#ff9b00','#ff4d2b','#cc0017']";
+static const char SENSOR_JS_CH_LBL[] = "['415','445','480','515','Clr','NIR','555','590','630','680']";
+static const char SENSOR_JS_W_R[] = "[0,0.02,0.08,0.28,0,0,0.55,0.82,1,0.46]";
+static const char SENSOR_JS_W_G[] = "[0.03,0.16,0.55,0.95,0,0,0.78,0.28,0.03,0]";
+static const char SENSOR_JS_W_B[] = "[0.52,0.95,0.78,0.18,0,0,0.01,0,0,0]";
+static const char SENSOR_LOG_HEADER_HTML[] = "<th>415</th><th>445</th><th>480</th><th>515</th><th>555</th><th>590</th><th>630</th><th>680</th><th>Clr</th><th>NIR</th>";
+static const char SENSOR_JS_LOG_IDX[] = "[0,1,2,3,6,7,8,9,4,5]";
+#else
+using SpectralSensor = Adafruit_AS7343;
+using SensorGain = as7343_gain_t;
+static const char SENSOR_DISPLAY_NAME[] = "AS7343";
+static const char SENSOR_SUBTITLE[] = "Self-Driving Lab &mdash; ESP32 Feather V2 + AS7343";
+static const int NUM_CH = 18;
+static const int RAW_READ_CH = 18;
+static const int N_SPEC = 10;
+static const int SPEC_CH[] = {12,6,0,7,8,15,1,2,9,13};
+static const float SPEC_WL[] = {405,425,450,475,515,550,555,600,640,690};
+static const float W_R[NUM_CH]={0.00f,0.11f,0.68f,0.00f,0,0,0.00f,0.00f,0.00f,1.00f,0,0,0.00f,0.39f,0.02f,0.10f,0,0};
+static const float W_G[NUM_CH]={0.08f,0.74f,0.12f,0.00f,0,0,0.01f,0.32f,0.93f,0.01f,0,0,0.00f,0.00f,0.00f,0.82f,0,0};
+static const float W_B[NUM_CH]={0.98f,0.01f,0.00f,0.00f,0,0,0.49f,0.73f,0.06f,0.00f,0,0,0.14f,0.00f,0.00f,0.01f,0,0};
+static const char SENSOR_JS_SPEC_IDX[] = "[12,6,0,7,8,15,1,2,9,13]";
+static const char SENSOR_JS_SPEC_WL[] = "[405,425,450,475,515,550,555,600,640,690]";
+static const char SENSOR_JS_SPEC_COL[] = "['#8800ff','#5500ff','#0055ff','#0099ff','#00cc44','#aacc00','#cccc00','#ff7700','#ff2200','#cc0000']";
+static const char SENSOR_JS_CH_COL[] = "['#6600CC','#99CC00','#FF7700','#888','#bbb','#999','#4400FF','#0044FF','#00BB00','#FF2200','#bbb','#999','#9900FF','#CC0000','#880000','#CCEE00','#bbb','#999']";
+static const char SENSOR_JS_CH_LBL[] = "['450','555','600','NIR','Cl','Cl','425','475','515','640','Cl','Cl','405','690','745','550','Cl','Cl']";
+static const char SENSOR_JS_W_R[] = "[0,0.11,0.68,0,0,0,0,0,0,1,0,0,0,0.39,0.02,0.10,0,0]";
+static const char SENSOR_JS_W_G[] = "[0.08,0.74,0.12,0,0,0,0.01,0.32,0.93,0.01,0,0,0,0,0,0.82,0,0]";
+static const char SENSOR_JS_W_B[] = "[0.98,0.01,0,0,0,0,0.49,0.73,0.06,0,0,0,0.14,0,0,0.01,0,0]";
+static const char SENSOR_LOG_HEADER_HTML[] = "<th>405</th><th>425</th><th>450</th><th>475</th><th>515</th><th>550</th><th>600</th><th>640</th><th>690</th><th>Clr</th>";
+static const char SENSOR_JS_LOG_IDX[] = "[12,6,0,7,8,15,2,9,13,4]";
+#endif
 
 Adafruit_NeoPixel pixel(1, NEOPIXEL_PIN, NEO_GRB + NEO_KHZ800);
-Adafruit_AS7343   as7343;
+SpectralSensor    spectralSensor;
 AsyncWebServer    server(80);
 Preferences       prefs;
 
@@ -44,16 +106,6 @@ void setLED(uint8_t r, uint8_t g, uint8_t b){
 //  0:FZ/450  1:FY/555  2:FXL/600  3:NIR/855  4,5:CLR0
 //  6:F2/425  7:F3/475  8:F4/515   9:F6/640   10,11:CLR1
 // 12:F1/405 13:F7/690 14:F8/745  15:F5/550   16,17:CLR2
-#define NUM_CH 18
-static const int   SPEC_CH[] = {12,6,0,7,8,15,1,2,9,13};
-static const int   N_SPEC    = 10;
-static const float SPEC_WL[] = {405,425,450,475,515,550,555,600,640,690};
-
-// LED spectral weights (Gaussian, R~635nm G~528nm B~455nm)
-static const float W_R[NUM_CH]={0.00f,0.11f,0.68f,0.00f,0,0,0.00f,0.00f,0.00f,1.00f,0,0,0.00f,0.39f,0.02f,0.10f,0,0};
-static const float W_G[NUM_CH]={0.08f,0.74f,0.12f,0.00f,0,0,0.01f,0.32f,0.93f,0.01f,0,0,0.00f,0.00f,0.00f,0.82f,0,0};
-static const float W_B[NUM_CH]={0.98f,0.01f,0.00f,0.00f,0,0,0.49f,0.73f,0.06f,0.00f,0,0,0.14f,0.00f,0.00f,0.01f,0,0};
-
 // ── Buffers ───────────────────────────────────────────────────────────────────
 struct Reading { uint8_t r,g,b; uint16_t ch[NUM_CH]; };
 static const int LOG_MAX=120; static Reading logBuf[LOG_MAX];
@@ -77,7 +129,12 @@ static bool saveStoredWiFiCreds(const String& ssid, const String& pass);
 static String readSerialLine(bool echoInput = true);
 static bool promptForWiFiCreds();
 static void connectWiFi();
+static void startFallbackAp();
 static void startMdns();
+static bool beginSpectralSensor();
+static bool readSpectralChannels(uint16_t* readings);
+static bool setSpectralGainIndex(int gainIdx);
+static String buildHtml();
 static bool parseJsonFloat(const String& body, const char* key, float& valueOut);
 static String buildStatusJson();
 static String buildScoresJson();
@@ -303,19 +360,40 @@ static void connectWiFi(){
     return;
   }
 
+  WiFi.mode(WIFI_STA);
   WiFi.begin(wifiSSID.c_str(), wifiPass.c_str());
   Serial.print("Connecting to ");
   Serial.print(wifiSSID);
   Serial.print(" ");
   setLED(0,0,60);
-  int tries=0;
-  while(WiFi.status()!=WL_CONNECTED&&tries++<40){delay(500);Serial.print(".");}
+  uint32_t startMs = millis();
+  while(WiFi.status()!=WL_CONNECTED && millis() - startMs < 30000){
+    delay(500);
+    Serial.print(".");
+  }
   if(WiFi.status()==WL_CONNECTED){
     startMdns();
     setLED(0,60,0);delay(1200);setLED(0,0,0);
   } else {
-    Serial.println("\nWiFi failed");
-    setStateMessage("WiFi connection failed. Reboot to re-enter credentials in Serial.");
+    Serial.println("\nWiFi failed after 30 seconds. Starting fallback AP.");
+    WiFi.disconnect(true, true);
+    startFallbackAp();
+  }
+}
+
+static void startFallbackAp(){
+  WiFi.mode(WIFI_AP);
+  if(WiFi.softAP(AP_FALLBACK_SSID)){
+    IPAddress apIp = WiFi.softAPIP();
+    String apUrl = "http://" + apIp.toString();
+    Serial.println("Open WiFi AP started.");
+    Serial.println("SSID: " + String(AP_FALLBACK_SSID));
+    Serial.println("Open: " + apUrl);
+    setStateMessage(("AP fallback active: join SDL at " + apUrl).c_str());
+    setLED(60,30,0);delay(1200);setLED(0,0,0);
+  } else {
+    Serial.println("ERROR: failed to start fallback AP.");
+    setStateMessage("WiFi failed and AP fallback could not start.");
     setLED(60,0,0);delay(2000);setLED(0,0,0);
   }
 }
@@ -331,6 +409,25 @@ static void startMdns(){
     Serial.println("WARN: mDNS failed to start; use the IP address instead.");
     setStateMessage("WiFi connected (mDNS unavailable).");
   }
+}
+
+static bool beginSpectralSensor(){
+  return spectralSensor.begin();
+}
+
+static bool setSpectralGainIndex(int gainIdx){
+  return spectralSensor.setGain((SensorGain)gainIdx);
+}
+
+static bool readSpectralChannels(uint16_t* readings){
+#if defined(SDL_SENSOR_AS7341)
+  uint16_t raw[RAW_READ_CH]={};
+  if(!spectralSensor.readAllChannels(raw)) return false;
+  for(int i=0;i<NUM_CH;i++) readings[i]=raw[i];
+  return true;
+#else
+  return spectralSensor.readAllChannels(readings);
+#endif
 }
 
 void updateBest(uint8_t r,uint8_t g,uint8_t b,float sc,const char* alg_name){
@@ -787,7 +884,7 @@ td:nth-child(-n+5){text-align:left}
 </style></head>
 <body>
 <h1>SDL Color Lab</h1>
-<div class="sub">Self-Driving Lab &mdash; ESP32 Feather V2 + AS7343</div>
+<div class="sub">__SENSOR_SUBTITLE__</div>
 <div class="tabs">
   <div class="tab active" onclick="showTab('recipe',this)">Recipe Search</div>
   <div class="tab" onclick="showTab('explore',this)">Explore</div>
@@ -1016,7 +1113,7 @@ td:nth-child(-n+5){text-align:left}
 <!-- ═══ EXPLORE TAB ═══ -->
 <div class="exp-page" id="tab-explore">
   <div class="card">
-    <h2>Raw Sensor (18 channels)</h2>
+    <h2>Raw Sensor (__RAW_SENSOR_COUNT__ channels)</h2>
     <div class="bars" id="rawBars"></div>
     <div class="stats" style="margin-top:10px">
       <div class="stat"><span class="v" id="eCount">0</span><span class="l">Readings</span></div>
@@ -1026,23 +1123,24 @@ td:nth-child(-n+5){text-align:left}
   <div class="card full">
     <h2>Recent Readings</h2>
     <table><thead><tr><th>#</th><th>Color</th><th>R</th><th>G</th><th>B</th>
-      <th>405</th><th>425</th><th>450</th><th>475</th><th>515</th><th>550</th><th>600</th><th>640</th><th>690</th><th>Clr</th>
+      __LOG_HEADERS__
     </tr></thead><tbody id="logTb"></tbody></table>
   </div>
 </div>
 
 <script>
 // ── Spectral metadata ─────────────────────────────────────────────────────────
-const SPEC_IDX=[12,6,0,7,8,15,1,2,9,13];
-const SPEC_WL =[405,425,450,475,515,550,555,600,640,690];
-const SPEC_COL=['#8800ff','#5500ff','#0055ff','#0099ff','#00cc44','#aacc00','#cccc00','#ff7700','#ff2200','#cc0000'];
-const CH_COL  =['#6600CC','#99CC00','#FF7700','#888','#bbb','#999','#4400FF','#0044FF','#00BB00','#FF2200','#bbb','#999','#9900FF','#CC0000','#880000','#CCEE00','#bbb','#999'];
-const CH_LBL  =['450','555','600','NIR','Cl','Cl','425','475','515','640','Cl','Cl','405','690','745','550','Cl','Cl'];
+const SPEC_IDX=__SPEC_IDX__;
+const SPEC_WL =__SPEC_WL__;
+const SPEC_COL=__SPEC_COL__;
+const CH_COL  =__CH_COL__;
+const CH_LBL  =__CH_LBL__;
+const LOG_CH_IDX=__LOG_CH_IDX__;
 
 // LED spectral weights (mirror of C++)
-const W_R=[0,0.11,0.68,0,0,0,0,0,0,1,0,0,0,0.39,0.02,0.10,0,0];
-const W_G=[0.08,0.74,0.12,0,0,0,0.01,0.32,0.93,0.01,0,0,0,0,0,0.82,0,0];
-const W_B=[0.98,0.01,0,0,0,0,0.49,0.73,0.06,0,0,0,0.14,0,0,0.01,0,0];
+const W_R=__W_R__;
+const W_G=__W_G__;
+const W_B=__W_B__;
 function genTargetSpec(r,g,b){ const rf=r/255,gf=g/255,bf=b/255; return W_R.map((_,i)=>rf*W_R[i]+gf*W_G[i]+bf*W_B[i]); }
 
 // ── Tab switching ─────────────────────────────────────────────────────────────
@@ -1583,7 +1681,7 @@ function renderLogRows(rows){
   rows.slice(-12).reverse().forEach((row,i)=>{
     const tr=document.createElement('tr');
     const cells=[rows.length-i,`<span class="sc" style="background:rgb(${row.r},${row.g},${row.b})"></span>`,
-      row.r,row.g,row.b,row.ch[12],row.ch[6],row.ch[0],row.ch[7],row.ch[8],row.ch[15],row.ch[2],row.ch[9],row.ch[13],row.ch[4]];
+      row.r,row.g,row.b,...LOG_CH_IDX.map(idx=>row.ch[idx] ?? 0)];
     tr.innerHTML=cells.map(v=>`<td>${v}</td>`).join('');
     tr.style.background=`rgba(${row.r},${row.g},${row.b},0.06)`; tb.appendChild(tr);
   });
@@ -1595,7 +1693,7 @@ function renderLogRows(rows){
 
 // ── Build raw bars ────────────────────────────────────────────────────────────
 const rb=document.getElementById('rawBars');
-for(let i=0;i<18;i++) rb.innerHTML+=`<div class="bw"><div class="rawb" id="rb${i}" style="background:${CH_COL[i]};height:0%"></div><div class="bl">${CH_LBL[i]}</div></div>`;
+for(let i=0;i<CH_COL.length;i++) rb.innerHTML+=`<div class="bw"><div class="rawb" id="rb${i}" style="background:${CH_COL[i]};height:0%"></div><div class="bl">${CH_LBL[i]}</div></div>`;
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 const tlogCard=document.getElementById('tlog').closest('.card');
@@ -1613,7 +1711,25 @@ setInterval(()=>{if(!poll)doPoll();},3000);
 
 // ── Web handlers ──────────────────────────────────────────────────────────────
 int runAutoGain(); // defined in Setup section below
-void handleRoot(AsyncWebServerRequest* request){ request->send(200,"text/html",HTML); }
+static String buildHtml(){
+  String html(HTML);
+  html.replace("__SENSOR_SUBTITLE__", SENSOR_SUBTITLE);
+  html.replace("__RAW_SENSOR_COUNT__", String(NUM_CH));
+  html.replace("__SENSOR_NAME__", SENSOR_DISPLAY_NAME);
+  html.replace("__SPEC_IDX__", SENSOR_JS_SPEC_IDX);
+  html.replace("__SPEC_WL__", SENSOR_JS_SPEC_WL);
+  html.replace("__SPEC_COL__", SENSOR_JS_SPEC_COL);
+  html.replace("__CH_COL__", SENSOR_JS_CH_COL);
+  html.replace("__CH_LBL__", SENSOR_JS_CH_LBL);
+  html.replace("__W_R__", SENSOR_JS_W_R);
+  html.replace("__W_G__", SENSOR_JS_W_G);
+  html.replace("__W_B__", SENSOR_JS_W_B);
+  html.replace("__LOG_HEADERS__", SENSOR_LOG_HEADER_HTML);
+  html.replace("__LOG_CH_IDX__", SENSOR_JS_LOG_IDX);
+  return html;
+}
+
+void handleRoot(AsyncWebServerRequest* request){ request->send(200,"text/html",buildHtml()); }
 
 static String buildStatusJson(){
   uint32_t elapsedMs = runStartMs > 0 ? (millis() - runStartMs) : 0;
@@ -1858,21 +1974,21 @@ int runAutoGain(){
   if(!sensorOK) return currentGainIdx;
   running=false; // pause any experiment
   int gIdx=4; // start at 8X — work up only if signal is too weak
-  as7343.setGain((as7343_gain_t)gIdx);
+  setSpectralGainIndex(gIdx);
   setLED(200,200,200); delay(400);
   for(int att=0;att<10;att++){
     uint16_t tb[NUM_CH]={};
-    if(!as7343.readAllChannels(tb)) break;
+    if(!readSpectralChannels(tb)) break;
     uint16_t mx=0;
     for(int i=0;i<N_SPEC;i++) mx=max(mx,tb[SPEC_CH[i]]);
-    Serial.printf("Gain idx=%d max=%u\n",gIdx,mx);
-    if(mx>40000 && gIdx>0){ gIdx--; as7343.setGain((as7343_gain_t)gIdx); delay(200); }
-    else if(mx<5000  && gIdx<10){ gIdx++; as7343.setGain((as7343_gain_t)gIdx); delay(200); }
+    Serial.printf("%s gain idx=%d max=%u\n",SENSOR_DISPLAY_NAME,gIdx,mx);
+    if(mx>40000 && gIdx>0){ gIdx--; setSpectralGainIndex(gIdx); delay(200); }
+    else if(mx<5000  && gIdx<10){ gIdx++; setSpectralGainIndex(gIdx); delay(200); }
     else break;
   }
   setLED(0,0,0);
   currentGainIdx=gIdx;
-  Serial.printf("Auto-gain complete: idx=%d\n",gIdx);
+  Serial.printf("%s auto-gain complete: idx=%d\n",SENSOR_DISPLAY_NAME,gIdx);
   return gIdx;
 }
 
@@ -1883,13 +1999,13 @@ void setup(){
   pinMode(NEOPIXEL_POWER,OUTPUT); digitalWrite(NEOPIXEL_POWER,HIGH);
   pixel.begin(); pixel.setBrightness(LED_BRIGHTNESS); pixel.show();
   Wire.begin();
-  if(!as7343.begin()){
-    Serial.println("ERROR: AS7343 not found"); sensorOK=false;
+  if(!beginSpectralSensor()){
+    Serial.printf("ERROR: %s not found\n", SENSOR_DISPLAY_NAME); sensorOK=false;
     for(int i=0;i<6;i++){setLED(255,0,0);delay(200);setLED(255,255,255);delay(200);}
     setLED(0,0,0);
   } else {
     sensorOK=true;
-    as7343.setATIME(29); as7343.setASTEP(599);
+    spectralSensor.setATIME(29); spectralSensor.setASTEP(599);
     runAutoGain();
   }
   connectWiFi();
@@ -1932,7 +2048,7 @@ void loop(){
     settling=true; nextMs=now+settleMs;
   } else {
     uint16_t buf[NUM_CH]={};
-    if(as7343.readAllChannels(buf)){
+    if(readSpectralChannels(buf)){
       sensorReadFailures=0;
       if(calibPhase==1){
         // Dark frame: LED off — store ambient spectrum then light the target color.
@@ -1950,7 +2066,7 @@ void loop(){
         if(isSaturated(buf)){
           if(currentGainIdx>0){
             currentGainIdx--;
-            as7343.setGain((as7343_gain_t)currentGainIdx);
+            setSpectralGainIndex(currentGainIdx);
             Serial.printf("Calib saturated, reducing gain to idx=%d\n",currentGainIdx);
             setStateMessage("Calibration saturated, reducing sensor gain...");
             settling=true; nextMs=now+settleMs;
