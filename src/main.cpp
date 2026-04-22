@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include <WiFi.h>
+#include <DNSServer.h>
 #include <AsyncTCP.h>
 #include <ESPAsyncWebServer.h>
 #include <ESPmDNS.h>
@@ -91,9 +92,11 @@ Adafruit_NeoPixel pixel(1, NEOPIXEL_PIN, NEO_GRB + NEO_KHZ800);
 SpectralSensor    spectralSensor;
 AsyncWebServer    server(80);
 Preferences       prefs;
+DNSServer         dnsServer;
 
 static uint8_t ledR=0, ledG=0, ledB=0;
 static bool    sensorOK=false;
+static bool    apFallbackActive=false;
 static String  wifiSSID;
 static String  wifiPass;
 
@@ -131,6 +134,7 @@ static bool promptForWiFiCreds();
 static void connectWiFi();
 static void startFallbackAp();
 static void startMdns();
+static void handleCaptivePortal(AsyncWebServerRequest* request);
 static bool beginSpectralSensor();
 static bool readSpectralChannels(uint16_t* readings);
 static bool setSpectralGainIndex(int gainIdx);
@@ -347,6 +351,7 @@ static bool promptForWiFiCreds(){
 }
 
 static void connectWiFi(){
+  apFallbackActive=false;
   if(hasCompileTimeWiFiCreds()){
     wifiSSID = WIFI_SSID_VALUE;
     wifiPass = WIFI_PASS_VALUE;
@@ -386,12 +391,16 @@ static void startFallbackAp(){
   if(WiFi.softAP(AP_FALLBACK_SSID)){
     IPAddress apIp = WiFi.softAPIP();
     String apUrl = "http://" + apIp.toString();
+    apFallbackActive=true;
+    dnsServer.start(53, "*", apIp);
     Serial.println("Open WiFi AP started.");
     Serial.println("SSID: " + String(AP_FALLBACK_SSID));
     Serial.println("Open: " + apUrl);
+    Serial.println("Captive portal DNS started.");
     setStateMessage(("AP fallback active: join SDL at " + apUrl).c_str());
     setLED(60,30,0);delay(1200);setLED(0,0,0);
   } else {
+    apFallbackActive=false;
     Serial.println("ERROR: failed to start fallback AP.");
     setStateMessage("WiFi failed and AP fallback could not start.");
     setLED(60,0,0);delay(2000);setLED(0,0,0);
@@ -399,6 +408,7 @@ static void startFallbackAp(){
 }
 
 static void startMdns(){
+  apFallbackActive=false;
   const char* hostName = "sdl";
   if(MDNS.begin(hostName)){
     MDNS.addService("http", "tcp", 80);
@@ -409,6 +419,14 @@ static void startMdns(){
     Serial.println("WARN: mDNS failed to start; use the IP address instead.");
     setStateMessage("WiFi connected (mDNS unavailable).");
   }
+}
+
+static void handleCaptivePortal(AsyncWebServerRequest* request){
+  if(!apFallbackActive){
+    request->send(404, "text/plain", "Not found");
+    return;
+  }
+  request->redirect("/");
 }
 
 static bool beginSpectralSensor(){
@@ -2010,6 +2028,12 @@ void setup(){
   }
   connectWiFi();
   server.on("/",         HTTP_GET,  handleRoot);
+  server.on("/generate_204", HTTP_GET, handleCaptivePortal);
+  server.on("/gen_204", HTTP_GET, handleCaptivePortal);
+  server.on("/hotspot-detect.html", HTTP_GET, handleCaptivePortal);
+  server.on("/canonical.html", HTTP_GET, handleCaptivePortal);
+  server.on("/success.txt", HTTP_GET, handleCaptivePortal);
+  server.on("/ncsi.txt", HTTP_GET, handleCaptivePortal);
   server.on("/status",   HTTP_GET,  handleStatus);
   server.on("/snapshot", HTTP_GET,  handleSnapshot);
   server.on("/log",      HTTP_GET,  handleLog);
@@ -2019,11 +2043,13 @@ void setup(){
   server.on("/human_probe", HTTP_POST, handleHumanProbe);
   server.on("/stop",     HTTP_POST, handleStop);
   server.on("/calibrate",HTTP_POST, handleCalibrate);
+  server.onNotFound(handleCaptivePortal);
   server.begin(); Serial.println("Server started.");
 }
 
 // ── Loop ──────────────────────────────────────────────────────────────────────
 void loop(){
+  if(apFallbackActive) dnsServer.processNextRequest();
   if(!running) return;
   if(!sensorOK){
     stopExperiment("Sensor unavailable. Search cannot run.", true);
