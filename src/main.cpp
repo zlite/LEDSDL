@@ -649,7 +649,7 @@ void afterHuman(const Reading& rd, float sc){
     return;
   }
   char msg[120];
-  snprintf(msg,sizeof(msg),"Human step %d scored %.1f%%. Adjust the sliders and probe again.",totalIter,sc);
+  snprintf(msg,sizeof(msg),"Human step %d scored %.1f%%. Adjust the sliders and score another guess.",totalIter,sc);
   setStateMessage(msg);
 }
 
@@ -946,7 +946,7 @@ td:nth-child(-n+5){text-align:left}
         </div>
         <div class="alg" data-alg="human" onclick="selAlg(this)">
           <div class="nm">Human</div>
-          <div class="ds">You steer the search. Move RGB sliders, submit probes, and race the AI.</div>
+          <div class="ds">You steer the search. Move RGB sliders, score guesses, and race the AI.</div>
         </div>
       </div>
       <div class="row">
@@ -955,7 +955,7 @@ td:nth-child(-n+5){text-align:left}
         <span class="dot dot-idle" id="dot2" style="margin-left:4px"></span>
       </div>
       <div class="human-shell" id="humanShell">
-        <div style="font-size:.66rem;color:var(--dim)">You get 10 blind tries. Adjust a color, then press Score Probe after Human mode starts.</div>
+        <div style="font-size:.66rem;color:var(--dim)">You get 10 blind tries. Adjust a color, then press Score Guess after Human mode starts.</div>
         <div class="human-grid">
           <span class="ch-lbl r">R</span>
           <input id="hRRange" type="range" min="0" max="255" value="128" oninput="syncHumanInput('R','range')">
@@ -972,8 +972,8 @@ td:nth-child(-n+5){text-align:left}
           <input id="hBNum" type="number" min="0" max="255" value="128" oninput="syncHumanInput('B','num')">
         </div>
         <div class="row" style="margin-top:10px">
-          <button class="btn-subtle" id="btnHumanProbe" onclick="submitHumanProbe()" disabled>Score Probe</button>
-          <span id="humanHint" style="font-size:.68rem;color:var(--dim)">Start a Human run to unlock manual probes.</span>
+          <button class="btn-subtle" id="btnHumanProbe" onclick="submitHumanProbe()" disabled>Score Guess</button>
+          <span id="humanHint" style="font-size:.68rem;color:var(--dim)">Start a Human run to unlock guesses.</span>
         </div>
       </div>
     </div>
@@ -1171,7 +1171,39 @@ function showTab(n,el){
 
 // ── Color input ───────────────────────────────────────────────────────────────
 let targetRGB={r:255,g:165,b:0}; let targetSpec=genTargetSpec(255,165,0);
-function parseColor(s){ const c=document.createElement('canvas').getContext('2d'); c.fillStyle='#000'; c.fillStyle=s.trim(); const h=c.fillStyle; if(h[0]==='#'&&h.length===7) return{r:parseInt(h.slice(1,3),16),g:parseInt(h.slice(3,5),16),b:parseInt(h.slice(5,7),16),hex:h}; return null; }
+const COLOR_ALIASES={
+  'black':'#000000','white':'#ffffff','gray':'#808080','grey':'#808080','silver':'#c0c0c0',
+  'red':'#ff0000','green':'#008000','blue':'#0000ff','yellow':'#ffff00','orange':'#ffa500',
+  'purple':'#800080','pink':'#ffc0cb','brown':'#a52a2a','cyan':'#00ffff','aqua':'#00ffff',
+  'magenta':'#ff00ff','fuchsia':'#ff00ff','lime':'#00ff00','maroon':'#800000','navy':'#000080',
+  'teal':'#008080','olive':'#808000','coral':'#ff7f50','salmon':'#fa8072','gold':'#ffd700',
+  'khaki':'#f0e68c','tan':'#d2b48c','beige':'#f5f5dc','ivory':'#fffff0','cream':'#fffdd0',
+  'lavender':'#e6e6fa','violet':'#ee82ee','indigo':'#4b0082','plum':'#dda0dd','orchid':'#da70d6',
+  'turquoise':'#40e0d0','mint':'#98ff98','emerald':'#50c878','jade':'#00a86b','chartreuse':'#7fff00',
+  'crimson':'#dc143c','scarlet':'#ff2400','ruby':'#e0115f','rose':'#ff007f','peach':'#ffe5b4',
+  'apricot':'#fbceb1','amber':'#ffbf00','mustard':'#ffdb58','lemon':'#fff700','goldenrod':'#daa520','sand':'#c2b280',
+  'bronze':'#cd7f32','copper':'#b87333','chocolate':'#d2691e','coffee':'#6f4e37','charcoal':'#36454f',
+  'slate':'#708090','azure':'#007fff','sky blue':'#87ceeb','royal blue':'#4169e1','baby blue':'#89cff0',
+  'midnight blue':'#191970','forest green':'#228b22','sea green':'#2e8b57','spring green':'#00ff7f','lime green':'#32cd32',
+  'dark green':'#006400','light green':'#90ee90','dark blue':'#00008b','light blue':'#add8e6','dark red':'#8b0000',
+  'light red':'#ff7f7f','dark orange':'#ff8c00','light orange':'#ffd580','dark purple':'#301934','light purple':'#c084fc',
+  'hot pink':'#ff69b4','deep pink':'#ff1493','light pink':'#ffb6c1','neon pink':'#ff10f0','pastel pink':'#ffd1dc',
+  'bright pink':'#ff007f','dusty rose':'#dcae96','mauve':'#e0b0ff','lilac':'#c8a2c8','periwinkle':'#ccccff',
+  'rebecca purple':'#663399','medium purple':'#9370db','blue violet':'#8a2be2','dark violet':'#9400d3','electric purple':'#bf00ff',
+  'neon green':'#39ff14','pastel green':'#77dd77','dark gray':'#404040','dark grey':'#404040','light gray':'#d3d3d3',
+  'light grey':'#d3d3d3','off white':'#faf9f6','snow':'#fffafa','linen':'#faf0e6'
+};
+function normalColorKey(s){ return s.trim().toLowerCase().replace(/[-_]+/g,' ').replace(/\s+/g,' '); }
+function parseColor(s){
+  const raw=(s||'').trim(); if(!raw)return null;
+  const key=normalColorKey(raw);
+  const css=COLOR_ALIASES[key]||COLOR_ALIASES[key.replace(/\s+/g,'')]||raw.replace(/\s+/g,'');
+  const c=document.createElement('canvas').getContext('2d');
+  c.fillStyle='#000'; c.fillStyle=css;
+  const h=c.fillStyle;
+  if(h[0]==='#'&&h.length===7) return{r:parseInt(h.slice(1,3),16),g:parseInt(h.slice(3,5),16),b:parseInt(h.slice(5,7),16),hex:h};
+  return null;
+}
 function syncPicker(el){ document.getElementById('colorText').value=el.value; }
 function applyTarget(){
   const c=parseColor(document.getElementById('colorText').value||document.getElementById('colorPicker').value);
@@ -1322,8 +1354,8 @@ async function startSearch(){
   document.getElementById('dot2').className='dot dot-run';
   document.getElementById('btnHumanProbe').disabled=true;
   document.getElementById('humanHint').textContent=curAlg==='human'
-    ? 'Calibrating first. Score Probe unlocks when the run is ready.'
-    : 'Start a Human run to unlock manual probes.';
+    ? 'Calibrating first. Score Guess unlocks when the run is ready.'
+    : 'Start a Human run to unlock guesses.';
   pollBusy=false; auxBusy=false; pollTick=0;
   renderAlgNarrative();
   poll=setInterval(doPoll,800);
@@ -1333,7 +1365,13 @@ async function submitHumanProbe(){
   const res=await fetch('/human_probe',{method:'POST',
     headers:{'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8'},
     body:new URLSearchParams({r,g,b})});
-  if(!res.ok) return;
+  if(!res.ok){
+    let msg='Guess was not accepted yet. Wait for Human mode to finish calibrating.';
+    try{ const err=await res.json(); if(err.error) msg=err.error; }catch(e){}
+    document.getElementById('humanHint').textContent=msg;
+    doPoll();
+    return;
+  }
   document.getElementById('btnHumanProbe').disabled=true;
   document.getElementById('humanHint').textContent=`Queued rgb(${r},${g},${b}). Measuring after settle...`;
 }
@@ -1356,7 +1394,7 @@ function endPoll(){
   document.getElementById('btnStop2').disabled=false;
   document.getElementById('dot2').className='dot dot-idle';
   document.getElementById('btnHumanProbe').disabled=true;
-  document.getElementById('humanHint').textContent='Start a Human run to unlock manual probes.';
+  document.getElementById('humanHint').textContent='Start a Human run to unlock guesses.';
   renderAlgNarrative();
 }
 function formatDuration(ms){
@@ -1407,10 +1445,11 @@ function updateUI(d){
   const humanActive=(getAlgorithmKeyFromStatus(d)==='human' && d.running);
   const probeBtn=document.getElementById('btnHumanProbe');
   const probeBusy=d.humanAwaitingProbe || d.humanProbePending;
-  probeBtn.disabled=!(humanActive && !probeBusy);
+  const calibrating=d.calibPhase && d.calibPhase !== 0;
+  probeBtn.disabled=!(humanActive && !probeBusy && !calibrating);
   document.getElementById('humanHint').textContent=humanActive
-    ? (probeBusy ? 'Probe in progress. Wait for the score, then try another color.' : 'Human mode ready. Adjust the RGB controls and press Score Probe.')
-    : 'Start a Human run to unlock manual probes.';
+    ? (calibrating ? 'Calibrating first. Score Guess unlocks when the run is ready.' : (probeBusy ? 'Guess in progress. Wait for the score, then try another color.' : 'Human mode ready. Adjust the RGB controls and press Score Guess.'))
+    : 'Start a Human run to unlock guesses.';
   renderAlgNarrative(d);
   // Update raw bars
   if(d.channels){
@@ -1489,7 +1528,7 @@ function renderAlgNarrative(d){
       } else if(algKey==='human'){
         phase=d.humanAwaitingProbe || d.humanProbePending
           ? 'Measuring your chosen color against the target spectrum.'
-          : `Waiting for your next move. Pick a new RGB recipe with the sliders and submit it for scoring. ${Math.max(0, HUMAN_MAX_TRIES_JS - (rec.evals || 0))} tries remain.`;
+          : `Waiting for your next move. Pick a new RGB recipe with the sliders and score your guess. ${Math.max(0, HUMAN_MAX_TRIES_JS - (rec.evals || 0))} tries remain.`;
         why=thought && thought.improved
           ? 'Your last move improved the score, so you can use that feedback to decide whether to push further in the same direction.'
           : 'Human mode is a 10-turn challenge: your goal is simply to post the highest score you can before the tries run out.';
@@ -1757,6 +1796,7 @@ static String buildStatusJson(){
   j+="\"lastScore\":"+String(lastScore,1)+",";
   j+="\"sensor\":"+String(sensorOK?"true":"false")+",";
   j+="\"algorithm\":"+String((int)alg)+",";
+  j+="\"calibPhase\":"+String(calibPhase)+",";
   j+="\"humanAwaitingProbe\":"+String(humanAwaitingProbe?"true":"false")+",";
   j+="\"humanProbePending\":"+String(humanProbePending?"true":"false")+",";
   j+="\"count\":"+String(logCount)+",";
@@ -1834,7 +1874,7 @@ void handleHumanProbe(AsyncWebServerRequest* request){
     return;
   }
   if(calibPhase!=0){
-    request->send(409,"application/json","{\"error\":\"still calibrating\"}");
+    request->send(409,"application/json","{\"error\":\"Still calibrating. Score Guess will unlock when Human mode is ready.\"}");
     return;
   }
   if(humanProbePending || humanAwaitingProbe){
@@ -2113,7 +2153,7 @@ void loop(){
             humanAwaitingProbe=false;
             humanProbePending=false;
             setLED(0,0,0);
-            setStateMessage("Human mode ready. Adjust a color and press Score Probe.");
+            setStateMessage("Human mode ready. Adjust a color and press Score Guess.");
             break;
           default: break;
         }
