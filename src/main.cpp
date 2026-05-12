@@ -99,6 +99,8 @@ static bool    sensorOK=false;
 static bool    apFallbackActive=false;
 static String  wifiSSID;
 static String  wifiPass;
+static String  deviceHostName = "sdl";
+static String  apSSID = AP_FALLBACK_SSID;
 
 void setLED(uint8_t r, uint8_t g, uint8_t b){
   ledR=r; ledG=g; ledB=b;
@@ -129,11 +131,16 @@ static void stopExperiment(const char* msg, bool turnLedOff);
 static bool hasCompileTimeWiFiCreds();
 static bool loadStoredWiFiCreds();
 static bool saveStoredWiFiCreds(const String& ssid, const String& pass);
+static void loadNetworkSettings();
+static bool saveNetworkSettings(const String& host, const String& ap);
+static String normalizeHostName(String host);
+static String normalizeApSsid(String ssid);
 static String readSerialLine(bool echoInput = true);
 static bool promptForWiFiCreds();
 static void connectWiFi();
 static void startFallbackAp();
 static void startMdns();
+static bool connectToNetwork(const String& ssid, const String& pass, uint32_t timeoutMs);
 static void handleCaptivePortal(AsyncWebServerRequest* request);
 static bool beginSpectralSensor();
 static bool readSpectralChannels(uint16_t* readings);
@@ -146,6 +153,11 @@ static String buildThoughtsJson();
 static String buildLogJson();
 static String buildSnapshotJson(bool includeLog);
 static void queueHumanProbe(uint8_t r, uint8_t g, uint8_t b);
+static String buildSettingsJson();
+static void handleSettingsGet(AsyncWebServerRequest* request);
+static void handleSettingsPost(AsyncWebServerRequest* request);
+static void handleWifiScan(AsyncWebServerRequest* request);
+static void handleWifiConnect(AsyncWebServerRequest* request);
 static bool getRequestInt(AsyncWebServerRequest* request, const char* key, int& valueOut);
 static bool getRequestFloat(AsyncWebServerRequest* request, const char* key, float& valueOut);
 static bool getRequestString(AsyncWebServerRequest* request, const char* key, String& valueOut);
@@ -306,6 +318,47 @@ static bool saveStoredWiFiCreds(const String& ssid, const String& pass){
   return ok;
 }
 
+static String normalizeHostName(String host){
+  host.trim();
+  host.toLowerCase();
+  if(host.endsWith(".local")) host = host.substring(0, host.length() - 6);
+  String out;
+  for(size_t i=0;i<host.length() && out.length()<32;i++){
+    char c=host[i];
+    bool ok=(c>='a'&&c<='z')||(c>='0'&&c<='9')||c=='-';
+    if(ok) out += c;
+  }
+  while(out.startsWith("-")) out.remove(0,1);
+  while(out.endsWith("-")) out.remove(out.length()-1);
+  return out.length() ? out : "sdl";
+}
+
+static String normalizeApSsid(String ssid){
+  ssid.trim();
+  if(!ssid.length()) ssid = "SDL";
+  if(ssid.length() > 31) ssid = ssid.substring(0, 31);
+  return ssid;
+}
+
+static void loadNetworkSettings(){
+  if(!prefs.begin("net", true)) return;
+  deviceHostName = normalizeHostName(prefs.getString("host", "sdl"));
+  apSSID = normalizeApSsid(prefs.getString("ap", AP_FALLBACK_SSID));
+  prefs.end();
+}
+
+static bool saveNetworkSettings(const String& host, const String& ap){
+  String cleanHost = normalizeHostName(host);
+  String cleanAp = normalizeApSsid(ap);
+  if(!prefs.begin("net", false)) return false;
+  bool ok = prefs.putString("host", cleanHost) > 0;
+  ok = prefs.putString("ap", cleanAp) > 0 && ok;
+  prefs.end();
+  deviceHostName = cleanHost;
+  apSSID = cleanAp;
+  return ok;
+}
+
 static String readSerialLine(bool echoInput){
   String line;
   while(true){
@@ -352,31 +405,27 @@ static bool promptForWiFiCreds(){
 
 static void connectWiFi(){
   apFallbackActive=false;
+  loadNetworkSettings();
   if(hasCompileTimeWiFiCreds()){
     wifiSSID = WIFI_SSID_VALUE;
     wifiPass = WIFI_PASS_VALUE;
   } else if(!loadStoredWiFiCreds()){
-    promptForWiFiCreds();
-  }
-
-  if(wifiSSID.length() == 0){
-    Serial.println("WiFi disabled: no credentials available.");
-    setStateMessage("WiFi disabled: enter credentials in Serial.");
+    Serial.println("WiFi credentials not found. Starting fallback AP for setup.");
+    startFallbackAp();
     return;
   }
 
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(wifiSSID.c_str(), wifiPass.c_str());
+  if(wifiSSID.length() == 0){
+    Serial.println("WiFi disabled: no credentials available. Starting fallback AP.");
+    startFallbackAp();
+    return;
+  }
+
   Serial.print("Connecting to ");
   Serial.print(wifiSSID);
   Serial.print(" ");
   setLED(0,0,60);
-  uint32_t startMs = millis();
-  while(WiFi.status()!=WL_CONNECTED && millis() - startMs < 30000){
-    delay(500);
-    Serial.print(".");
-  }
-  if(WiFi.status()==WL_CONNECTED){
+  if(connectToNetwork(wifiSSID, wifiPass, 30000)){
     startMdns();
     setLED(0,60,0);delay(1200);setLED(0,0,0);
   } else {
@@ -387,17 +436,18 @@ static void connectWiFi(){
 }
 
 static void startFallbackAp(){
-  WiFi.mode(WIFI_AP);
-  if(WiFi.softAP(AP_FALLBACK_SSID)){
+  loadNetworkSettings();
+  WiFi.mode(WIFI_AP_STA);
+  if(WiFi.softAP(apSSID.c_str())){
     IPAddress apIp = WiFi.softAPIP();
     String apUrl = "http://" + apIp.toString();
     apFallbackActive=true;
     dnsServer.start(53, "*", apIp);
     Serial.println("Open WiFi AP started.");
-    Serial.println("SSID: " + String(AP_FALLBACK_SSID));
+    Serial.println("SSID: " + apSSID);
     Serial.println("Open: " + apUrl);
     Serial.println("Captive portal DNS started.");
-    setStateMessage(("AP fallback active: join SDL at " + apUrl).c_str());
+    setStateMessage(("AP fallback active: join " + apSSID + " at " + apUrl).c_str());
     setLED(60,30,0);delay(1200);setLED(0,0,0);
   } else {
     apFallbackActive=false;
@@ -408,17 +458,28 @@ static void startFallbackAp(){
 }
 
 static void startMdns(){
-  apFallbackActive=false;
-  const char* hostName = "sdl";
-  if(MDNS.begin(hostName)){
+  MDNS.end();
+  if(MDNS.begin(deviceHostName.c_str())){
     MDNS.addService("http", "tcp", 80);
-    Serial.println("\nOpen: http://" + String(hostName) + ".local or http://" + WiFi.localIP().toString());
-    setStateMessage("WiFi connected at http://sdl.local");
+    Serial.println("\nOpen: http://" + deviceHostName + ".local or http://" + WiFi.localIP().toString());
+    setStateMessage(("WiFi connected at http://" + deviceHostName + ".local").c_str());
   } else {
     Serial.println("\nOpen: http://" + WiFi.localIP().toString());
     Serial.println("WARN: mDNS failed to start; use the IP address instead.");
     setStateMessage("WiFi connected (mDNS unavailable).");
   }
+}
+
+static bool connectToNetwork(const String& ssid, const String& pass, uint32_t timeoutMs){
+  WiFi.mode(apFallbackActive ? WIFI_AP_STA : WIFI_STA);
+  WiFi.begin(ssid.c_str(), pass.c_str());
+  uint32_t startMs = millis();
+  while(WiFi.status()!=WL_CONNECTED && millis() - startMs < timeoutMs){
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println();
+  return WiFi.status()==WL_CONNECTED;
 }
 
 static void handleCaptivePortal(AsyncWebServerRequest* request){
@@ -812,8 +873,8 @@ h1{text-align:center;font-size:1.25rem;letter-spacing:3px;color:#fff;text-transf
 .card{background:var(--card);border-radius:10px;padding:14px;border:1px solid var(--bd)}
 h2{font-size:.68rem;text-transform:uppercase;letter-spacing:1.5px;color:var(--dim);margin-bottom:10px}
 input[type=color]{width:42px;height:32px;border:none;border-radius:5px;cursor:pointer;padding:0;background:none}
-input[type=text]{flex:1;background:#1e2130;border:1px solid var(--bd);color:var(--tx);border-radius:6px;padding:6px 9px;font-size:.8rem}
-input[type=text]:focus{outline:1px solid var(--acc)}
+input[type=text],input[type=password],select{flex:1;background:#1e2130;border:1px solid var(--bd);color:var(--tx);border-radius:6px;padding:6px 9px;font-size:.8rem}
+input[type=text]:focus,input[type=password]:focus,select:focus{outline:1px solid var(--acc)}
 .row{display:flex;gap:7px;align-items:center;margin-bottom:8px}
 button{border:none;border-radius:7px;padding:7px 16px;font-size:.8rem;font-weight:600;cursor:pointer;transition:background .2s}
 .btn-go{background:var(--acc);color:#fff}.btn-go:hover{background:#5f52e8}.btn-go:disabled{background:#2a2d3a;color:#555;cursor:default}
@@ -899,6 +960,15 @@ th:nth-child(-n+5){text-align:left}
 td{padding:3px 5px;border-bottom:1px solid #111520;font-family:monospace;text-align:right}
 td:nth-child(-n+5){text-align:left}
 .sc{display:inline-block;width:9px;height:9px;border-radius:2px;vertical-align:middle}
+.settings-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+@media(max-width:680px){.settings-grid{grid-template-columns:1fr}}
+.net-list{display:flex;flex-direction:column;gap:6px;margin:8px 0}
+.net-item{display:grid;grid-template-columns:1fr auto auto;gap:8px;align-items:center;background:#111520;border:1px solid var(--bd);border-radius:8px;padding:7px 9px;font-size:.76rem}
+.net-name{font-weight:600;color:#fff;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.net-meta{font-size:.68rem;color:var(--dim)}
+.form-stack{display:flex;flex-direction:column;gap:8px}
+.form-stack label{font-size:.62rem;letter-spacing:1px;text-transform:uppercase;color:var(--dim)}
+.status-line{font-size:.72rem;color:var(--dim);line-height:1.4;margin-top:8px}
 </style></head>
 <body>
 <h1>SDL Color Lab</h1>
@@ -906,6 +976,7 @@ td:nth-child(-n+5){text-align:left}
 <div class="tabs">
   <div class="tab active" onclick="showTab('recipe',this)">Recipe Search</div>
   <div class="tab" onclick="showTab('explore',this)">Explore</div>
+  <div class="tab" onclick="showTab('settings',this);loadSettings()">Settings</div>
 </div>
 
 <!-- ═══ RECIPE TAB ═══ -->
@@ -1146,6 +1217,40 @@ td:nth-child(-n+5){text-align:left}
   </div>
 </div>
 
+<!-- SETTINGS TAB -->
+<div class="exp-page" id="tab-settings">
+  <div class="settings-grid full">
+    <div class="card">
+      <h2>WiFi</h2>
+      <div class="row">
+        <button class="btn-subtle" id="btnScan" onclick="scanWifi()">Scan Networks</button>
+        <span id="wifiScanStatus" class="status-line"></span>
+      </div>
+      <div class="net-list" id="wifiList"><div class="status-line">Scan to find nearby networks.</div></div>
+      <div class="form-stack">
+        <label for="wifiSsid">Network SSID</label>
+        <input type="text" id="wifiSsid" placeholder="Classroom WiFi">
+        <label for="wifiPass">Password</label>
+        <input type="password" id="wifiPass" placeholder="Leave blank for open networks">
+        <button class="btn-go" id="btnWifiConnect" onclick="connectWifi()">Connect</button>
+      </div>
+      <div id="wifiStatus" class="status-line"></div>
+    </div>
+    <div class="card">
+      <h2>Device Names</h2>
+      <div class="form-stack">
+        <label for="deviceHost">Network Name (.local)</label>
+        <input type="text" id="deviceHost" placeholder="sdl, sdl1, sdl2">
+        <label for="apSsid">Fallback AP SSID</label>
+        <input type="text" id="apSsid" placeholder="SDL, SDL1, SDL2">
+        <button class="btn-go" onclick="saveSettings()">Save Names</button>
+      </div>
+      <div id="nameStatus" class="status-line"></div>
+      <div class="status-line" id="currentNet"></div>
+    </div>
+  </div>
+</div>
+
 <script>
 // ── Spectral metadata ─────────────────────────────────────────────────────────
 const SPEC_IDX=__SPEC_IDX__;
@@ -1167,6 +1272,63 @@ function showTab(n,el){
   document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active')); el.classList.add('active');
   document.querySelectorAll('.page,.exp-page').forEach(p=>p.classList.remove('active'));
   document.getElementById('tab-'+n).classList.add('active');
+}
+
+async function loadSettings(){
+  try{
+    const d=await(await fetch('/settings')).json();
+    document.getElementById('deviceHost').value=d.host||'sdl';
+    document.getElementById('apSsid').value=d.apSsid||'SDL';
+    document.getElementById('wifiSsid').value=d.savedSsid||'';
+    const addr=d.connected ? `http://${d.host}.local or http://${d.ip}` : (d.apActive ? `fallback AP ${d.apSsid} at http://${d.apIp}` : 'not connected');
+    document.getElementById('currentNet').textContent=`Current: ${addr}`;
+    document.getElementById('wifiStatus').textContent=d.connected?`Connected to ${d.savedSsid}`:(d.apActive?'Fallback AP is active':'Not connected');
+  }catch(e){ document.getElementById('currentNet').textContent='Could not load settings.'; }
+}
+async function scanWifi(){
+  const btn=document.getElementById('btnScan'), st=document.getElementById('wifiScanStatus'), list=document.getElementById('wifiList');
+  btn.disabled=true; st.textContent='Scanning...'; list.innerHTML='';
+  try{
+    const d=await(await fetch('/wifi_scan')).json();
+    if(!d.networks || !d.networks.length) list.innerHTML='<div class="status-line">No networks found.</div>';
+    else{
+      list.innerHTML='';
+      d.networks.forEach(n=>{
+        const item=document.createElement('div');
+        item.className='net-item';
+        item.innerHTML=`<span class="net-name"></span><span class="net-meta">${n.rssi} dBm</span><button class="btn-subtle">Use</button>`;
+        item.querySelector('.net-name').textContent=n.ssid+(n.secure?'':' (open)');
+        item.querySelector('button').onclick=()=>{document.getElementById('wifiSsid').value=n.ssid;document.getElementById('wifiPass').focus();};
+        list.appendChild(item);
+      });
+    }
+    st.textContent='Done';
+  }catch(e){ st.textContent='Scan failed'; }
+  btn.disabled=false;
+}
+async function connectWifi(){
+  const ssid=document.getElementById('wifiSsid').value.trim(), pass=document.getElementById('wifiPass').value;
+  const st=document.getElementById('wifiStatus');
+  if(!ssid){st.textContent='Choose or enter an SSID first.';return;}
+  document.getElementById('btnWifiConnect').disabled=true; st.textContent='Connecting...';
+  try{
+    const res=await fetch('/wifi_connect',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8'},body:new URLSearchParams({ssid,pass})});
+    const d=await res.json();
+    st.textContent=d.ok?`Connected. Open http://${d.host}.local or http://${d.ip}`:(d.error||'Connection failed');
+    loadSettings();
+  }catch(e){ st.textContent='Connection failed'; }
+  document.getElementById('btnWifiConnect').disabled=false;
+}
+async function saveSettings(){
+  const host=document.getElementById('deviceHost').value, ap=document.getElementById('apSsid').value;
+  const st=document.getElementById('nameStatus');
+  st.textContent='Saving...';
+  try{
+    const res=await fetch('/settings',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8'},body:new URLSearchParams({host,ap})});
+    const d=await res.json();
+    st.textContent=d.ok?`Saved. Network name: ${d.host}.local, fallback AP: ${d.apSsid}`:(d.error||'Save failed');
+    loadSettings();
+  }catch(e){ st.textContent='Save failed'; }
 }
 
 // ── Color input ───────────────────────────────────────────────────────────────
@@ -1911,6 +2073,78 @@ void handleCalibrate(AsyncWebServerRequest* request){
   request->send(200,"application/json",msg);
 }
 
+static String buildSettingsJson(){
+  String ip = WiFi.status()==WL_CONNECTED ? WiFi.localIP().toString() : "";
+  String apIp = apFallbackActive ? WiFi.softAPIP().toString() : "";
+  String j="{";
+  j.reserve(360);
+  j+="\"host\":\""+jsonEscape(deviceHostName.c_str())+"\",";
+  j+="\"apSsid\":\""+jsonEscape(apSSID.c_str())+"\",";
+  j+="\"savedSsid\":\""+jsonEscape(wifiSSID.c_str())+"\",";
+  j+="\"connected\":"+String(WiFi.status()==WL_CONNECTED?"true":"false")+",";
+  j+="\"apActive\":"+String(apFallbackActive?"true":"false")+",";
+  j+="\"ip\":\""+ip+"\",";
+  j+="\"apIp\":\""+apIp+"\"";
+  j+="}";
+  return j;
+}
+
+void handleSettingsGet(AsyncWebServerRequest* request){
+  request->send(200,"application/json",buildSettingsJson());
+}
+
+void handleSettingsPost(AsyncWebServerRequest* request){
+  String host, ap;
+  getRequestString(request,"host",host);
+  getRequestString(request,"ap",ap);
+  if(!host.length()) host=deviceHostName;
+  if(!ap.length()) ap=apSSID;
+  if(!saveNetworkSettings(host, ap)){
+    request->send(500,"application/json","{\"ok\":false,\"error\":\"save failed\"}");
+    return;
+  }
+  bool wasApActive = apFallbackActive;
+  if(WiFi.status()==WL_CONNECTED) startMdns();
+  if(wasApActive) startFallbackAp();
+  String j="{\"ok\":true,\"host\":\""+jsonEscape(deviceHostName.c_str())+"\",\"apSsid\":\""+jsonEscape(apSSID.c_str())+"\"}";
+  request->send(200,"application/json",j);
+}
+
+void handleWifiScan(AsyncWebServerRequest* request){
+  if(apFallbackActive) WiFi.mode(WIFI_AP_STA);
+  int n=WiFi.scanNetworks(false, true);
+  String j="{\"networks\":[";
+  j.reserve(1200);
+  for(int i=0;i<n;i++){
+    if(i>0) j+=",";
+    bool secure=WiFi.encryptionType(i)!=WIFI_AUTH_OPEN;
+    j+="{\"ssid\":\""+jsonEscape(WiFi.SSID(i).c_str())+"\",\"rssi\":"+String(WiFi.RSSI(i))+",\"secure\":"+String(secure?"true":"false")+"}";
+  }
+  j+="]}";
+  WiFi.scanDelete();
+  request->send(200,"application/json",j);
+}
+
+void handleWifiConnect(AsyncWebServerRequest* request){
+  String ssid, pass;
+  if(!getRequestString(request,"ssid",ssid) || !ssid.length()){
+    request->send(400,"application/json","{\"ok\":false,\"error\":\"missing ssid\"}");
+    return;
+  }
+  getRequestString(request,"pass",pass);
+  stopExperiment("Connecting to WiFi...", true);
+  wifiSSID=ssid; wifiPass=pass;
+  if(connectToNetwork(ssid, pass, 20000)){
+    saveStoredWiFiCreds(ssid, pass);
+    startMdns();
+    String j="{\"ok\":true,\"host\":\""+jsonEscape(deviceHostName.c_str())+"\",\"ip\":\""+WiFi.localIP().toString()+"\"}";
+    request->send(200,"application/json",j);
+  } else {
+    startFallbackAp();
+    request->send(200,"application/json","{\"ok\":false,\"error\":\"connection failed; fallback AP restarted\"}");
+  }
+}
+
 static String buildLogJson(){
   int total=min(logCount,16);
   int start=(logCount<=LOG_MAX)?max(0,logHead-total):(logHead-total+LOG_MAX)%LOG_MAX;
@@ -2079,6 +2313,10 @@ void setup(){
   server.on("/log",      HTTP_GET,  handleLog);
   server.on("/thoughts", HTTP_GET,  handleThoughts);
   server.on("/scores",   HTTP_GET,  handleScores);
+  server.on("/settings", HTTP_GET,  handleSettingsGet);
+  server.on("/settings", HTTP_POST, handleSettingsPost);
+  server.on("/wifi_scan", HTTP_GET, handleWifiScan);
+  server.on("/wifi_connect", HTTP_POST, handleWifiConnect);
   server.on("/start",    HTTP_POST, handleStart);
   server.on("/human_probe", HTTP_POST, handleHumanProbe);
   server.on("/stop",     HTTP_POST, handleStop);
