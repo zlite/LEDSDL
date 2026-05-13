@@ -24,8 +24,20 @@
 #endif
 
 // ── Hardware ──────────────────────────────────────────────────────────────────
-#define NEOPIXEL_PIN   0
-#define NEOPIXEL_POWER 2
+#ifndef PIN_NEOPIXEL
+#define PIN_NEOPIXEL 0
+#endif
+
+#if defined(PIN_NEOPIXEL_I2C_POWER)
+#define SDL_NEOPIXEL_POWER PIN_NEOPIXEL_I2C_POWER
+#elif defined(NEOPIXEL_I2C_POWER)
+#define SDL_NEOPIXEL_POWER NEOPIXEL_I2C_POWER
+#else
+#define SDL_NEOPIXEL_POWER 2
+#endif
+
+#define NEOPIXEL_PIN   PIN_NEOPIXEL
+#define NEOPIXEL_POWER SDL_NEOPIXEL_POWER
 #define LED_BRIGHTNESS 200
 
 #ifndef WIFI_SSID
