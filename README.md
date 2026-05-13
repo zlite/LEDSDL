@@ -12,6 +12,8 @@ If you haven't set your wifi details in the code, on startup after 30 seconds it
 When plugged in via USB, the Feather will automatically charge the Lipo, if you're using one.
 
 
+![outside](hand.jpg)
+
 ![insides](insides.jpg)
 ----
 ![flashing](animation.gif)
