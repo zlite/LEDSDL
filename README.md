@@ -17,7 +17,7 @@ When plugged in via USB, the Feather will automatically charge the Lipo, if you'
 ![flashing](animation.gif)
 
 BOM:
-- [Adafruit Feather ESP32 C6](https://www.adafruit.com/product/5400)
+- [Adafruit Feather ESP32 C6](https://www.adafruit.com/product/5933)
 - [Adafruit 10-channel color sensor](https://www.adafruit.com/product/4698)
 - [Adafruit Stemma 4-pin cable, 50mm](https://www.adafruit.com/product/4399)  (if out of stock, a longer cable can work, too)
 - Optional [Adafruit 400mAh battery with short cable](https://www.adafruit.com/product/3898)
