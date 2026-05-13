@@ -1,5 +1,5 @@
 ![screenshot](screenshot.png)
-This is a minimal self-driving lab demonstration to "discover" color theory by doing an exploration/exploitation search of color space by driving a RGB LED and measuring it with a 14-channel color sensor. Users (often students) will learn about different SDL algorithms, such as Baysean Optimization and Gradient Descent, understanding why some are better at the task than others, and be able to try to beat the AI with "Human" mode. It all works via a web UI, but involves real-world data, where you can watch the experiments running in real time.
+This is a minimal self-driving lab demonstration to "discover" color theory by doing an exploration/exploitation search of color space through driving a RGB LED and measuring it with a 14-channel color sensor. Users (often students) will learn about different SDL algorithms, such as Baysean Optimization and Gradient Descent, understanding why some are better at the task than others, and be able to try to beat the AI with "Human" mode. It all works via a web UI, but involves real-world data, where you can watch the experiments running in real time.
 
 The whole thing can be made for $40, with no soldering required. it has an optional 400mah LiPo battery that the Feather can automatically recharge, making this a totally self-contained and portable SDL.
 
@@ -17,8 +17,8 @@ When plugged in via USB, the Feather will automatically charge the Lipo, if you'
 ![flashing](animation.gif)
 
 BOM:
-- [Adafruit Feather ESP32 C6](https://www.adafruit.com/product/5933)
-- [Adafruit 10-channel color sensor](https://www.adafruit.com/product/4698)
-- [Adafruit Stemma 4-pin cable, 50mm](https://www.adafruit.com/product/4399)  (if out of stock, a longer cable can work, too)
-- Optional [Adafruit 400mAh battery with short cable](https://www.adafruit.com/product/3898)
+- [Adafruit Feather ESP32 C6](https://www.adafruit.com/product/5933) ($14.95)
+- [Adafruit 10-channel color sensor](https://www.adafruit.com/product/4698) ($18.95)
+- [Adafruit Stemma 4-pin cable, 50mm](https://www.adafruit.com/product/4399)  ($0.95, if out of stock, a longer cable can work, too)
+- Optional [Adafruit 400mAh battery with short cable](https://www.adafruit.com/product/3898) ($6.95)
 
