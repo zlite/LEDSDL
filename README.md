@@ -5,7 +5,7 @@ The whole thing can be made for $40, with no soldering required. it has an optio
 
 Instructions: Load code onto ESP32 with the Platormio extension in VSCode (change the port in the ini file to whatever your ESP32 shows up as). Codex or Claude Code extensions in VS Code will do this for you. Alternatively, you can just load the file on the ESP32 using the Arduino IDE.
 
-3D print the parts. Everything is snap-together, except the Feather board which should be screwed in with small (M2) self-tapping screws or any other small screw you have lying around
+3D print the parts. Everything is snap-together, no screws required.
 
 If you haven't set your wifi details in the code, on startup after 30 seconds it will create its own Wifi access point called "SDL". Connect your phone or laptop to it and when prompted to login via a brower it will automatically take you to the app. Once in the app, in the setting tab you can search for your local Wifi network and enter in your password (if any) and press "Connect" (you only need to do this once; it will remember it next time). Once it's connected to your network, you should be able to open the UI in your web browser by just typing "sdl.local" in the URL bar. 
 
